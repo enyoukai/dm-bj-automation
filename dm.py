@@ -2,13 +2,12 @@ import requests
 from time import sleep
 import re
 import numpy as np
-import copy
 
 with open('token.txt', 'r') as f:
     TOKEN = f.read()
 
-USER = 'saber'
-CHANNEL_ID = '804605889033273367'
+USER = ''
+CHANNEL_ID = ''
 DM_ID = "270904126974590976"
 API_BASE = "https://discord.com/api/v8/"
 MESSAGE_BASE = f"{API_BASE}channels/{CHANNEL_ID}/messages"
