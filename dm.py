@@ -4,21 +4,24 @@ import numpy as np
 import asyncio
 import json
 import logging
+import yaml
 
 from enum import Enum
 
-with open('token.txt', 'r') as f:
-    TOKEN = f.read()
+with open('config.yaml', 'r') as f:
+    config = yaml.safe_load(f)
 
-CHANNEL_ID = ''
+TOKEN = config['token']
+CHANNEL_ID = config['channel']
+BET = config['bet']
+
 DM_ID = "270904126974590976"
 API_BASE = "https://discord.com/api/v9/"
 MESSAGE_ENDPOINT = f"{API_BASE}channels/{CHANNEL_ID}/messages"
 GATEWAY_ENDPOINT = "wss://gateway.discord.gg/?v=9&encoding=json"
+HEADERS = {"Authorization": TOKEN}
 
-p2 = re.compile(r'[0-9,J,Q,K,A]+')
-
-hard = np.array([['h', 'h', 'h','h','h','h','h','h','h','h'], #4
+HARD_ARRAY = np.array([['h', 'h', 'h','h','h','h','h','h','h','h'], #4
                  ['h', 'h', 'h','h','h','h','h','h','h','h'], #5
                  ['h', 'h', 'h','h','h','h','h','h','h','h'], #6
                  ['h', 'h', 'h','h','h','h','h','h','h','h'], #7
@@ -37,7 +40,7 @@ hard = np.array([['h', 'h', 'h','h','h','h','h','h','h','h'], #4
                  ['s', 's', 's','s','s','s','s','s','s','s'], #20
                  ['s', 's', 's','s','s','s','s','s','s','s'], #21
                  ])
-soft = np.array([['h','h','h','h','h','h','h','h','h','h'], #13
+SOFT_ARRAY = np.array([['h','h','h','h','h','h','h','h','h','h'], #13
                  ['h','h','h','h','h','h','h','h','h','h'], #14
                  ['h','h','h','h','h','h','h','h','h','h'], #15
                  ['h','h','h','h','h','h','h','h','h','h'], #16
@@ -48,7 +51,7 @@ soft = np.array([['h','h','h','h','h','h','h','h','h','h'], #13
                  ['s','s','s','s','s','s','s','s','s','s'] #21
                  ]) 
 
-class OpCodes(): # seems to break with enum. fix later i guess
+class OpCodes(): # TODO: have it stop breaking when subclassing Enum
     DISPATCH = 0
     HEARTBEAT = 1
     IDENTIFY = 2
@@ -56,10 +59,10 @@ class OpCodes(): # seems to break with enum. fix later i guess
     ACK = 11
 
 async def main():
-    async with aiohttp.ClientSession() as session, session.ws_connect(GATEWAY_ENDPOINT) as ws:
-        await handle_ws(ws)
+    async with aiohttp.ClientSession(headers=HEADERS) as session, session.ws_connect(GATEWAY_ENDPOINT) as ws:
+        await handle_ws(ws, session)
 
-async def handle_ws(ws):
+async def handle_ws(ws, session):
     while True:
         msg = await ws.receive() 
 
@@ -69,29 +72,39 @@ async def handle_ws(ws):
             if payload['op'] == OpCodes.HELLO:
                 logging.info("Hello received")
 
-                asyncio.create_task(identify(ws))
-                asyncio.create_task(heartbeat(ws, payload))
+                await identify(ws)
+                asyncio.create_task(heartbeat_loop(ws, payload))
 
             if payload['op'] == OpCodes.ACK:
                 logging.info("ACK received")
 
             if payload['op'] == OpCodes.DISPATCH:
-                asyncio.create_task(handle_event(ws, payload))
+                asyncio.create_task(handle_event(ws, session, payload))
+
+            if payload['op'] == OpCodes.HEARTBEAT:
+                await heartbeat(ws)
 
         elif msg.type == aiohttp.WSMsgType.CLOSE:
             logging.info("Closing connection")
-            await ws.close()
+            break
+        
+        elif msg.type == aiohttp.WSMsgType.ERROR:
+            logging.error(msg)
             break
 
-async def heartbeat(ws, payload):
-    heartbeat_payload = {'op': OpCodes.HEARTBEAT, 'd': 'null'}
+async def heartbeat_loop(ws, payload):
     interval_s = payload['d']['heartbeat_interval'] / 1000 # heartbeat interval comes in milliseconds
 
     while True:
         await asyncio.sleep(interval_s)
-        await send(ws, heartbeat_payload)
+        await heartbeat(ws)
 
-        logging.info("Heartbeat sent")
+
+async def heartbeat(ws):
+    heartbeat_payload = {'op': OpCodes.HEARTBEAT, 'd': 'null'}
+    
+    await ws_send(ws, heartbeat_payload)
+    logging.info("Heartbeat sent")
 
 async def identify(ws):
     identify_payload = {
@@ -105,21 +118,52 @@ async def identify(ws):
             }
         }
     }
-    await send(ws, identify_payload)
+    await ws_send(ws, identify_payload)
     logging.info("Connected")
 
-async def send(ws, payload):
+async def ws_send(ws, payload):
     await ws.send_str(json.dumps(payload))
 
-async def handle_event(ws, payload):
-    logging.debug(payload)
-    
+async def handle_event(ws, session, payload): 
     type = payload['t']
     data = payload['d']
 
     if type == 'MESSAGE_CREATE':
+        game_message = "Type `h` to **hit**, type `s` to **stand**, or type `e` to **end** the game."
+        bj_command = f"pls bj {str(BET)}"
+        pattern = re.compile(r'[0-9,J,Q,K,A]+')
+
+
         author = data['author']
-        logging.info(f"{author['username']}#{author['discriminator']}: {data['content']}")
+        content = data['content']
+
+        # i really need a different way of doing this
+        try:
+            embed = data['embeds'][0] # get the first embed
+            embed_desc = embed['description']
+        except (KeyError, IndexError):
+            embed_desc = ""
+
+        logging.debug(f"{author['username']}#{author['discriminator']}: {data['content']}")
+
+        if author['id'] == DM_ID: 
+            if "ended" in content or any(x in embed_desc for x in ['win', 'lose', 'tie']): # start new game
+                async with session.post(MESSAGE_ENDPOINT, json={"content":bj_command}) as r:
+                    logging.info("Started new game")
+                    return
+        
+            elif game_message in content:
+                embed_fields = embed['fields']
+                user_fields = embed_fields[0]['value'].split('\n')
+                dealer_fields = embed_fields[1]['value'].split('\n')
+
+                user_cards = pattern.findall(user_fields[0])
+                user_total = pattern.findall(user_fields[1])
+
+                dealer_card = pattern.findall(dealer_fields[0])
+
+                logging.info(f"User Cards: {user_cards}\nUser Total: {user_total}\nDealer Card: {dealer_card}")
+
 
 logging.basicConfig(level=logging.INFO)
 asyncio.run(main())
