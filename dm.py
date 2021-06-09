@@ -5,7 +5,6 @@ import asyncio
 import json
 import logging
 import yaml
-
 from enum import Enum
 
 with open('config.yaml', 'r') as f:
@@ -21,7 +20,11 @@ MESSAGE_ENDPOINT = f"{API_BASE}channels/{CHANNEL_ID}/messages"
 GATEWAY_ENDPOINT = "wss://gateway.discord.gg/?v=9&encoding=json"
 HEADERS = {"Authorization": TOKEN}
 
-HARD_ARRAY = np.array([['h', 'h', 'h','h','h','h','h','h','h','h'], #4
+CARD_PATTERN = re.compile(r'[0-9,J,Q,K,A]+')
+SLEEP_PATTERN = re.compile(r'[0-9]')
+HARD_ARRAY = np.array([
+                 # 2-------------------------------------A
+                 ['h', 'h', 'h','h','h','h','h','h','h','h'], #4
                  ['h', 'h', 'h','h','h','h','h','h','h','h'], #5
                  ['h', 'h', 'h','h','h','h','h','h','h','h'], #6
                  ['h', 'h', 'h','h','h','h','h','h','h','h'], #7
@@ -40,7 +43,8 @@ HARD_ARRAY = np.array([['h', 'h', 'h','h','h','h','h','h','h','h'], #4
                  ['s', 's', 's','s','s','s','s','s','s','s'], #20
                  ['s', 's', 's','s','s','s','s','s','s','s'], #21
                  ])
-SOFT_ARRAY = np.array([['h','h','h','h','h','h','h','h','h','h'], #13
+SOFT_ARRAY = np.array([
+                 ['h','h','h','h','h','h','h','h','h','h'], #13
                  ['h','h','h','h','h','h','h','h','h','h'], #14
                  ['h','h','h','h','h','h','h','h','h','h'], #15
                  ['h','h','h','h','h','h','h','h','h','h'], #16
@@ -60,6 +64,7 @@ class OpCodes(): # TODO: have it stop breaking when subclassing Enum
 
 async def main():
     async with aiohttp.ClientSession(headers=HEADERS) as session, session.ws_connect(GATEWAY_ENDPOINT) as ws:
+        await session.post(MESSAGE_ENDPOINT, json={"content": f"pls bet {BET}"})
         await handle_ws(ws, session)
 
 async def handle_ws(ws, session):
@@ -130,26 +135,35 @@ async def handle_event(ws, session, payload):
 
     if type == 'MESSAGE_CREATE':
         game_message = "Type `h` to **hit**, type `s` to **stand**, or type `e` to **end** the game."
-        bj_command = f"pls bj {str(BET)}"
-        pattern = re.compile(r'[0-9,J,Q,K,A]+')
-
+        bj_command = f"pls bj {str(BET)}"      
 
         author = data['author']
         content = data['content']
 
-        # i really need a different way of doing this
+        # wtf
         try:
             embed = data['embeds'][0] # get the first embed
             embed_desc = embed['description']
         except (KeyError, IndexError):
             embed_desc = ""
 
-        logging.debug(f"{author['username']}#{author['discriminator']}: {data['content']}")
 
         if author['id'] == DM_ID: 
+            logging.debug(f"{data}")
+
             if "ended" in content or any(x in embed_desc for x in ['win', 'lose', 'tie']): # start new game
                 async with session.post(MESSAGE_ENDPOINT, json={"content":bj_command}) as r:
                     logging.info("Started new game")
+                    return
+                
+            elif "Wait" in embed_desc:
+                sleep_time = int(SLEEP_PATTERN.findall(embed_desc)[0])
+                logging.info(f"Sleeping for {str(sleep_time)}s")
+                await asyncio.sleep(sleep_time)
+
+                # copy pasting code
+                async with session.post(MESSAGE_ENDPOINT, json={"content":bj_command}) as r:
+                    logging.info("Started new game after sleeping")
                     return
         
             elif game_message in content:
@@ -157,13 +171,47 @@ async def handle_event(ws, session, payload):
                 user_fields = embed_fields[0]['value'].split('\n')
                 dealer_fields = embed_fields[1]['value'].split('\n')
 
-                user_cards = pattern.findall(user_fields[0])
-                user_total = pattern.findall(user_fields[1])
+                user_cards = CARD_PATTERN.findall(user_fields[0])
+                user_total = int(CARD_PATTERN.findall(user_fields[1])[0])
 
-                dealer_card = pattern.findall(dealer_fields[0])
+                dealer_card = CARD_PATTERN.findall(dealer_fields[0])[0]
+                dealer_total = card_to_value(dealer_card)
+                is_soft = is_hand_soft(user_cards, int(user_total))
 
-                logging.info(f"User Cards: {user_cards}\nUser Total: {user_total}\nDealer Card: {dealer_card}")
+                move = soft_strat(user_total, dealer_total) if is_soft else hard_strat(user_total, dealer_total)
 
+                async with session.post(MESSAGE_ENDPOINT, json={"content":move}) as r:
+                    logging.info("Played with " + move)
+                    return
+
+def is_hand_soft(hand, total):
+    # i have absolutely no clue if the math here works lol
+    
+    pip_value = sum([int(i) for i in hand if i.isdigit()])
+    face_value = sum([10 for i in hand if i in ['J', 'Q', 'K']])
+
+    value_before_ace = pip_value + face_value
+    ace_value = total - value_before_ace
+
+    if ace_value >= 11:
+        return True
+    
+    return False
+
+def card_to_value(card):
+    if card.isdigit():
+        return int(card)
+    elif card == 'A':
+        return 11
+    else:
+        return 10
+
+def soft_strat(user, dealer):
+    return SOFT_ARRAY[user - 13][dealer - 2]
+
+
+def hard_strat(user, dealer):   
+    return HARD_ARRAY[user - 4][dealer - 2]
 
 logging.basicConfig(level=logging.INFO)
 asyncio.run(main())
