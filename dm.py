@@ -64,7 +64,6 @@ class OpCodes(): # TODO: have it stop breaking when subclassing Enum
 
 async def main():
     async with aiohttp.ClientSession(headers=HEADERS) as session, session.ws_connect(GATEWAY_ENDPOINT) as ws:
-        await session.post(MESSAGE_ENDPOINT, json={"content": f"pls bj {BET}"})
         await handle_ws(ws, session)
 
 async def handle_ws(ws, session):
@@ -77,7 +76,7 @@ async def handle_ws(ws, session):
             if payload['op'] == OpCodes.HELLO:
                 logging.info("Hello received")
 
-                await identify(ws)
+                asyncio.create_task(identify(ws, session))
                 asyncio.create_task(heartbeat_loop(ws, payload))
 
             if payload['op'] == OpCodes.ACK:
@@ -111,7 +110,7 @@ async def heartbeat(ws):
     await ws_send(ws, heartbeat_payload)
     logging.info("Heartbeat sent")
 
-async def identify(ws):
+async def identify(ws, session):
     identify_payload = {
         "op": OpCodes.IDENTIFY,
         "d": {
@@ -126,8 +125,14 @@ async def identify(ws):
     await ws_send(ws, identify_payload)
     logging.info("Connected")
 
+    await on_connect(ws, session)
+
 async def ws_send(ws, payload):
     await ws.send_str(json.dumps(payload))
+
+async def on_connect(ws, session):
+    await session.post(MESSAGE_ENDPOINT, json={"content": f"pls bj {BET}"})
+
 
 async def handle_event(ws, session, payload): 
     type = payload['t']
@@ -140,7 +145,7 @@ async def handle_event(ws, session, payload):
         author = data['author']
         content = data['content']
 
-        # wtf
+        # wtf ok there has to be some way to do this cleaner without having a 500 column long if statement
         try:
             embed = data['embeds'][0] # get the first embed
             embed_desc = embed['description']
@@ -181,7 +186,7 @@ async def handle_event(ws, session, payload):
                 move = soft_strat(user_total, dealer_total) if is_soft else hard_strat(user_total, dealer_total)
 
                 async with session.post(MESSAGE_ENDPOINT, json={"content":move}) as r:
-                    logging.info("Played with " + move)
+                    logging.info(f"User Cards: {user_cards}\nUser Total: {user_total}\nDealer Card: {dealer_card}\nSoft Hand: {is_soft}\nPlayed with {move}")
                     return
 
 def is_hand_soft(hand, total):
