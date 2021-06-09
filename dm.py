@@ -1,16 +1,20 @@
-import requests
-from time import sleep
+import aiohttp
 import re
 import numpy as np
+import asyncio
+import json
+import logging
+
+from enum import Enum
 
 with open('token.txt', 'r') as f:
     TOKEN = f.read()
 
-USER = ''
 CHANNEL_ID = ''
 DM_ID = "270904126974590976"
-API_BASE = "https://discord.com/api/v8/"
-MESSAGE_BASE = f"{API_BASE}channels/{CHANNEL_ID}/messages"
+API_BASE = "https://discord.com/api/v9/"
+MESSAGE_ENDPOINT = f"{API_BASE}channels/{CHANNEL_ID}/messages"
+GATEWAY_ENDPOINT = "wss://gateway.discord.gg/?v=9&encoding=json"
 
 p2 = re.compile(r'[0-9,J,Q,K,A]+')
 
@@ -44,6 +48,83 @@ soft = np.array([['h','h','h','h','h','h','h','h','h','h'], #13
                  ['s','s','s','s','s','s','s','s','s','s'] #21
                  ]) 
 
+class OpCodes(): # seems to break with enum. fix later i guess
+    DISPATCH = 0
+    HEARTBEAT = 1
+    IDENTIFY = 2
+    HELLO = 10
+    ACK = 11
+
+async def main():
+    async with aiohttp.ClientSession() as session, session.ws_connect(GATEWAY_ENDPOINT) as ws:
+        await handle_ws(ws)
+
+async def handle_ws(ws):
+    while True:
+        msg = await ws.receive() 
+
+        if msg.type == aiohttp.WSMsgType.TEXT:     
+            payload = json.loads(msg.data) 
+
+            if payload['op'] == OpCodes.HELLO:
+                logging.info("Hello received")
+
+                asyncio.create_task(identify(ws))
+                asyncio.create_task(heartbeat(ws, payload))
+
+            if payload['op'] == OpCodes.ACK:
+                logging.info("ACK received")
+
+            if payload['op'] == OpCodes.DISPATCH:
+                asyncio.create_task(handle_event(ws, payload))
+
+        elif msg.type == aiohttp.WSMsgType.CLOSE:
+            logging.info("Closing connection")
+            await ws.close()
+            break
+
+async def heartbeat(ws, payload):
+    heartbeat_payload = {'op': OpCodes.HEARTBEAT, 'd': 'null'}
+    interval_s = payload['d']['heartbeat_interval'] / 1000 # heartbeat interval comes in milliseconds
+
+    while True:
+        await asyncio.sleep(interval_s)
+        await send(ws, heartbeat_payload)
+
+        logging.info("Heartbeat sent")
+
+async def identify(ws):
+    identify_payload = {
+        "op": OpCodes.IDENTIFY,
+        "d": {
+            "token": TOKEN,
+            "properties": {
+                "$os": "linux",
+                "$browser": "my_library",
+                "$device": "my_library"
+            }
+        }
+    }
+    await send(ws, identify_payload)
+    logging.info("Connected")
+
+async def send(ws, payload):
+    await ws.send_str(json.dumps(payload))
+
+async def handle_event(ws, payload):
+    logging.debug(payload)
+    
+    type = payload['t']
+    data = payload['d']
+
+    if type == 'MESSAGE_CREATE':
+        author = data['author']
+        logging.info(f"{author['username']}#{author['discriminator']}: {data['content']}")
+
+logging.basicConfig(level=logging.INFO)
+asyncio.run(main())
+
+'''
 def soft_strat(user, v):
     print(f"USER: {user}\nDEALER: {v}")
     return soft[user - 13][v - 2]
@@ -98,3 +179,4 @@ while True:
         requests.post(MESSAGE_BASE, headers={"Authorization":TOKEN}, json={"content":idk})
 
     sleep(8)
+'''
