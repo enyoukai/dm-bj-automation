@@ -64,7 +64,7 @@ class OpCodes(): # TODO: have it stop breaking when subclassing Enum
 
 async def main():
     async with aiohttp.ClientSession(headers=HEADERS) as session, session.ws_connect(GATEWAY_ENDPOINT) as ws:
-        await session.post(MESSAGE_ENDPOINT, json={"content": f"pls bet {BET}"})
+        await session.post(MESSAGE_ENDPOINT, json={"content": f"pls bj {BET}"})
         await handle_ws(ws, session)
 
 async def handle_ws(ws, session):
